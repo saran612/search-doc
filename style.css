@@ -44,6 +44,17 @@ body{
     background: rgba(0, 123, 255, 0.05);
     color: #007bff;
 }
+.storage-list-header {
+    margin-top: 30px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #333;
+    margin-bottom: 15px;
+}
+.storage-list-header h3 {
+    font-size: 14px !important;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
 .file-list {
     margin-top: 20px;
     display: flex;

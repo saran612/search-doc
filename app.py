@@ -7,6 +7,10 @@ import boto3
 import os
 import meilisearch
 import uuid
+import datetime
+from sqlalchemy import create_engine, Column, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
@@ -14,10 +18,25 @@ load_dotenv()
 
 app = FastAPI()
 
+# Database Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/search_docs")
+Base = declarative_base()
+
+class DocumentMetadata(Base):
+    __tablename__ = 'documents'
+    id = Column(String, primary_key=True)
+    filename = Column(String)
+    storage_key = Column(String)
+    meili_id = Column(String)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 # MinIO Configuration
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "admin")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "password")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "documents")
 
 # Meilisearch Configuration
@@ -38,6 +57,13 @@ meili_client = meilisearch.Client(MEILI_HTTP_ADDR, MEILI_MASTER_KEY)
 
 # Ensure services are ready
 def init_services():
+    # Database
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("PostgreSQL: Tables verified/created.")
+    except Exception as e:
+        print(f"PostgreSQL Connection Error: {e}")
+
     # MinIO
     try:
         s3_client.head_bucket(Bucket=MINIO_BUCKET)
@@ -60,9 +86,17 @@ def init_services():
         if "index_already_exists" in str(e):
             print(f"Meilisearch: Index '{MEILI_INDEX_NAME}' verified.")
         else:
-            print(f"Meilisearch Connection Error: {e}. Please ensure Meilisearch is running.")
+            print(f"Meilisearch Connection Error: {e}")
 
 init_services()
+
+# Dependency for DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # Enable CORS
 app.add_middleware(
@@ -93,7 +127,33 @@ def extract_text_from_docx(file_bytes):
 
 @app.get("/")
 async def root():
-    return {"message": "Document Search API with MinIO & Meilisearch is running"}
+    return {"message": "Document Search API with PostgreSQL Persistence is running"}
+
+@app.get("/documents")
+async def get_documents():
+    db = SessionLocal()
+    try:
+        docs = db.query(DocumentMetadata).order_by(DocumentMetadata.created_at.desc()).all()
+        return [{"id": d.id, "filename": d.filename, "created_at": d.created_at, "source": "db"} for d in docs]
+    finally:
+        db.close()
+
+@app.get("/minio-files")
+async def get_minio_files():
+    try:
+        response = s3_client.list_objects_v2(Bucket=MINIO_BUCKET)
+        files = []
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                files.append({
+                    "filename": obj['Key'],
+                    "size": obj['Size'],
+                    "last_modified": obj['LastModified'].isoformat(),
+                    "source": "minio"
+                })
+        return files
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MinIO error: {str(e)}")
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -120,7 +180,7 @@ async def upload_file(file: UploadFile = File(...)):
         try:
             text = extract_text_from_docx(content)
         except Exception:
-            raise HTTPException(status_code=400, detail="Legacy .doc format is not supported. Please use .docx")
+            raise HTTPException(status_code=400, detail="Legacy .doc format is not supported.")
     else:
         raise HTTPException(status_code=400, detail="Unsupported file format.")
 
@@ -135,11 +195,26 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Meilisearch Indexing Error: {e}")
 
+    # 4. Save to PostgreSQL
+    db = SessionLocal()
+    try:
+        db_doc = DocumentMetadata(
+            id=doc_id,
+            filename=file.filename,
+            storage_key=file.filename,
+            meili_id=doc_id
+        )
+        db.add(db_doc)
+        db.commit()
+    except Exception as e:
+        print(f"PostgreSQL Error: {e}")
+    finally:
+        db.close()
+
     return {
         "id": doc_id,
         "filename": file.filename,
-        "text": text,
-        "storage": "MinIO",
+        "storage": "MinIO + PostgreSQL",
         "search": "Meilisearch Indexed"
     }
 

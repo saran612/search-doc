@@ -43,13 +43,8 @@ async function handleFiles(files) {
 }
 
 async function uploadFile(file) {
-    // Create a temporary item in the list
     const fileId = Date.now();
-    const item = document.createElement('div');
-    item.className = 'file-item';
-    item.id = `file-${fileId}`;
-    item.innerHTML = `<div class="file-row"><span>${file.name}</span> <span class="status">Uploading...</span></div>`;
-    fileList.appendChild(item);
+    addFileToUI(file.name, fileId, 'Uploading...');
 
     const formData = new FormData();
     formData.append('file', file);
@@ -66,28 +61,61 @@ async function uploadFile(file) {
         }
 
         const data = await response.json();
-        item.querySelector('.status').textContent = '✅';
+        updateFileStatus(fileId, '✅', `Stored in ${data.storage}`);
         
-        // Show storage info
+    } catch (error) {
+        console.error('Error:', error);
+        updateFileStatus(fileId, '❌', error.message);
+    }
+}
+
+function addFileToUI(name, id, statusText) {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    item.id = `file-${id}`;
+    item.innerHTML = `<div class="file-row"><span>${name}</span> <span class="status">${statusText}</span></div>`;
+    fileList.appendChild(item);
+    return item;
+}
+
+function updateFileStatus(id, icon, storageInfo) {
+    const item = document.getElementById(`file-${id}`);
+    if (!item) return;
+    
+    item.querySelector('.status').textContent = icon;
+    
+    if (storageInfo) {
         const info = document.createElement('div');
         info.style.fontSize = '10px';
         info.style.color = '#555';
-        info.textContent = `Stored in ${data.storage} (${data.bucket})`;
+        info.textContent = storageInfo;
         item.appendChild(info);
-        
-        // Add to our local document store
-        documents.push({
-            name: data.filename,
-            text: data.text,
-            id: fileId
-        });
-
-    } catch (error) {
-        console.error('Error:', error);
-        item.querySelector('.status').textContent = '❌';
-        item.title = error.message;
     }
 }
+
+// Fetch existing documents on load
+async function loadDocuments() {
+    try {
+        const response = await fetch('http://localhost:8000/minio-files');
+        if (!response.ok) throw new Error('Failed to load documents');
+        
+        const docs = await response.json();
+        docs.forEach(doc => {
+            const item = addFileToUI(doc.filename, doc.filename, '✅');
+            const info = document.createElement('div');
+            info.style.fontSize = '10px';
+            info.style.color = '#555';
+            const date = new Date(doc.last_modified).toLocaleDateString();
+            info.textContent = `In MinIO - ${date} (${(doc.size / 1024).toFixed(1)} KB)`;
+            item.appendChild(info);
+        });
+    } catch (error) {
+        console.error('Error loading documents:', error);
+    }
+}
+
+// Initialize
+loadDocuments();
 
 // Meilisearch search logic
 async function search() {
