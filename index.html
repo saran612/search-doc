@@ -21,12 +21,29 @@
         </div>
     </div>
     <div class="main">
-        <h1>Search Docs</h1>
-        <div class="search-box">
-            <input type="text" id="search-input" placeholder="Search across documents...">
-            <button id="search-btn">Search</button>
+        <div class="top-bar">
+            <h1>Search Docs</h1>
+            <div class="search-box">
+                <input type="text" id="search-input" placeholder="Search across documents...">
+                <button id="search-btn">Search</button>
+            </div>
         </div>
-        <div id="results" class="results-container"></div>
+        
+        <div class="content-area">
+            <div id="results" class="results-container"></div>
+            
+            <div id="preview-container" class="preview-container hidden">
+                <div class="preview-header">
+                    <h2 id="preview-title">Document Preview</h2>
+                    <div class="preview-actions">
+                        <input type="text" id="per-file-search" placeholder="Find in file...">
+                        <button id="find-missing-btn">Find Missing</button>
+                    </div>
+                </div>
+                <div id="validation-report" class="validation-report hidden"></div>
+                <div id="preview-body" class="preview-body"></div>
+            </div>
+        </div>
     </div>
     <script src="main.js"></script>
 </body>
