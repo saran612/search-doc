@@ -5,11 +5,21 @@ const searchInput = document.getElementById('search-input');
 const searchBtn = document.getElementById('search-btn');
 const resultsContainer = document.getElementById('results');
 
+// New Preview Elements
+const previewContainer = document.getElementById('preview-container');
+const previewTitle = document.getElementById('preview-title');
+const previewBody = document.getElementById('preview-body');
+const perFileSearch = document.getElementById('per-file-search');
+const findMissingBtn = document.getElementById('find-missing-btn');
+const validationReport = document.getElementById('validation-report');
+
 let documents = [];
+let currentDocId = null;
+let currentDocText = "";
 
 // Drag and drop handlers
 dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();meilisearch
+    e.preventDefault();
     dropZone.classList.add('dragover');
 });
 
@@ -63,17 +73,26 @@ async function uploadFile(file) {
         const data = await response.json();
         updateFileStatus(fileId, '✅', `Stored in ${data.storage}`);
         
+        // Refresh MinIO list after upload
+        loadDocuments();
+        
     } catch (error) {
         console.error('Error:', error);
         updateFileStatus(fileId, '❌', error.message);
     }
 }
 
-function addFileToUI(name, id, statusText) {
+function addFileToUI(name, id, statusText, docId = null) {
     const item = document.createElement('div');
     item.className = 'file-item';
     item.id = `file-${id}`;
     item.innerHTML = `<div class="file-row"><span>${name}</span> <span class="status">${statusText}</span></div>`;
+    
+    if (docId) {
+        item.style.cursor = 'pointer';
+        item.onclick = () => selectDocument(docId, name);
+    }
+    
     fileList.appendChild(item);
     return item;
 }
@@ -96,17 +115,18 @@ function updateFileStatus(id, icon, storageInfo) {
 // Fetch existing documents on load
 async function loadDocuments() {
     try {
-        const response = await fetch('http://localhost:8000/minio-files');
+        const response = await fetch('http://localhost:8000/documents');
         if (!response.ok) throw new Error('Failed to load documents');
         
         const docs = await response.json();
+        fileList.innerHTML = ''; // Clear list
         docs.forEach(doc => {
-            const item = addFileToUI(doc.filename, doc.filename, '✅');
+            const item = addFileToUI(doc.filename, doc.id, '✅', doc.id);
             const info = document.createElement('div');
             info.style.fontSize = '10px';
             info.style.color = '#555';
-            const date = new Date(doc.last_modified).toLocaleDateString();
-            info.textContent = `In MinIO - ${date} (${(doc.size / 1024).toFixed(1)} KB)`;
+            const date = new Date(doc.created_at).toLocaleDateString();
+            info.textContent = `Stored in DB - ${date}`;
             item.appendChild(info);
         });
     } catch (error) {
@@ -114,13 +134,75 @@ async function loadDocuments() {
     }
 }
 
-// Initialize
-loadDocuments();
+// Select and Preview Document
+async function selectDocument(docId, filename) {
+    currentDocId = docId;
+    previewContainer.classList.remove('hidden');
+    previewTitle.textContent = `Preview: ${filename}`;
+    previewBody.textContent = "Loading...";
+    validationReport.classList.add('hidden');
+    perFileSearch.value = '';
+
+    try {
+        const response = await fetch(`http://localhost:8000/documents/${docId}`);
+        if (!response.ok) throw new Error('Failed to fetch document details');
+        
+        const data = await response.json();
+        currentDocText = data.text;
+        previewBody.textContent = currentDocText;
+    } catch (error) {
+        previewBody.textContent = `Error loading document: ${error.message}`;
+    }
+}
+
+// Find Missing Button
+findMissingBtn.onclick = async () => {
+    if (!currentDocId) return;
+    
+    validationReport.classList.remove('hidden');
+    validationReport.textContent = "Validating...";
+
+    console.log(`Validating document: ${currentDocId}`);
+    const url = `http://localhost:8000/documents/${currentDocId}/validate`;
+    console.log(`Fetch URL: ${url}`);
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        
+        const data = await response.json();
+        
+        if (data && data.missing_fields && data.missing_fields.length > 0) {
+            validationReport.innerHTML = `⚠️ <strong>Missing Fields:</strong> ${data.missing_fields.join(', ')}`;
+        } else if (data && data.missing_fields) {
+            validationReport.innerHTML = "✅ <strong>All fields found!</strong> Document appears complete.";
+        } else {
+            throw new Error("Invalid response format from server");
+        }
+    } catch (error) {
+        console.error('Validation error:', error);
+        validationReport.textContent = `Error validating: ${error.message}`;
+    }
+};
+
+// Per-file Search Highlighting
+perFileSearch.oninput = () => {
+    const query = perFileSearch.value.trim();
+    if (!query) {
+        previewBody.textContent = currentDocText;
+        return;
+    }
+
+    const regex = new RegExp(`(${query})`, 'gi');
+    const highlighted = currentDocText.replace(regex, '<mark class="highlight">$1</mark>');
+    previewBody.innerHTML = highlighted;
+};
 
 // Meilisearch search logic
 async function search() {
     const query = searchInput.value.trim();
     resultsContainer.innerHTML = '';
+    previewContainer.classList.add('hidden'); // Hide preview on global search
 
     if (!query) return;
 
@@ -138,6 +220,8 @@ async function search() {
         results.hits.forEach(hit => {
             const resultItem = document.createElement('div');
             resultItem.className = 'result-item';
+            resultItem.style.cursor = 'pointer';
+            resultItem.onclick = () => selectDocument(hit.id, hit.filename);
             
             // Meilisearch provides highlights in _formatted
             const snippet = hit._formatted.text;
@@ -161,3 +245,6 @@ searchBtn.addEventListener('click', search);
 searchInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') search();
 });
+
+// Initialize
+loadDocuments();

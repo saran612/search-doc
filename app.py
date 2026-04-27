@@ -8,7 +8,8 @@ import os
 import meilisearch
 import uuid
 import datetime
-from sqlalchemy import create_engine, Column, String, DateTime
+import regex
+from sqlalchemy import create_engine, Column, String, DateTime, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from botocore.exceptions import ClientError
@@ -28,6 +29,7 @@ class DocumentMetadata(Base):
     filename = Column(String)
     storage_key = Column(String)
     meili_id = Column(String)
+    missing_fields = Column(JSON)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 engine = create_engine(DATABASE_URL)
@@ -106,6 +108,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Request Logging Middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"Request: {request.method} {request.url}")
+    response = await call_next(request)
+    print(f"Response: {response.status_code}")
+    return response
 
 def extract_text_from_pdf(file_bytes):
     try:
@@ -195,14 +205,18 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Meilisearch Indexing Error: {e}")
 
-    # 4. Save to PostgreSQL
+    # 4. Check for missing fields
+    missing_fields = regex.check_missing_fields(text)
+
+    # 5. Save to PostgreSQL
     db = SessionLocal()
     try:
         db_doc = DocumentMetadata(
             id=doc_id,
             filename=file.filename,
             storage_key=file.filename,
-            meili_id=doc_id
+            meili_id=doc_id,
+            missing_fields=missing_fields
         )
         db.add(db_doc)
         db.commit()
@@ -215,7 +229,8 @@ async def upload_file(file: UploadFile = File(...)):
         "id": doc_id,
         "filename": file.filename,
         "storage": "MinIO + PostgreSQL",
-        "search": "Meilisearch Indexed"
+        "search": "Meilisearch Indexed",
+        "missing_fields": missing_fields
     }
 
 @app.get("/search")
@@ -232,6 +247,87 @@ async def search(q: str):
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Meilisearch search error: {str(e)}")
+
+@app.get("/documents/{doc_id}")
+async def get_document_details(doc_id: str):
+    print(f"Fetching details for doc_id: {doc_id}")
+    try:
+        db = SessionLocal()
+        db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+        db.close()
+
+        if not db_doc:
+            raise HTTPException(status_code=404, detail="Document not found in database")
+
+        text = ""
+        try:
+            # Try to get text from Meilisearch
+            doc = meili_client.index(MEILI_INDEX_NAME).get_document(doc_id)
+            text = doc.get("text", "")
+        except Exception:
+            print(f"Meilisearch missing doc {doc_id}. Re-extracting from MinIO...")
+            # Fallback: Extract from MinIO
+            try:
+                response = s3_client.get_object(Bucket=MINIO_BUCKET, Key=db_doc.storage_key)
+                content = response['Body'].read()
+                extension = db_doc.filename.split(".")[-1].lower()
+                
+                if extension == "pdf":
+                    text = extract_text_from_pdf(content)
+                elif extension in ["docx", "doc"]:
+                    text = extract_text_from_docx(content)
+                
+                # Re-index in Meilisearch for next time
+                meili_client.index(MEILI_INDEX_NAME).add_documents([{
+                    "id": doc_id,
+                    "filename": db_doc.filename,
+                    "text": text,
+                    "extension": extension
+                }])
+            except Exception as s3_err:
+                print(f"MinIO/Extraction error: {s3_err}")
+                text = "Error: Could not extract text from storage."
+
+        return {
+            "id": db_doc.id,
+            "filename": db_doc.filename,
+            "text": text,
+            "missing_fields": db_doc.missing_fields,
+            "created_at": db_doc.created_at
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Server error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/documents/{doc_id}/validate")
+async def validate_document(doc_id: str):
+    print(f"Validating doc_id: {doc_id}")
+    try:
+        # Get document text using the logic above
+        details = await get_document_details(doc_id)
+        text = details.get("text", "")
+        
+        if not text or text.startswith("Error:"):
+            raise HTTPException(status_code=404, detail="Document text not available for validation")
+
+        missing_fields = regex.check_missing_fields(text)
+        
+        # Update DB
+        db = SessionLocal()
+        db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+        if db_doc:
+            db_doc.missing_fields = missing_fields
+            db.commit()
+        db.close()
+        
+        return {"id": doc_id, "missing_fields": missing_fields}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Validation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
