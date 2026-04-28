@@ -120,11 +120,24 @@ async def log_requests(request: Request, call_next):
 
 def extract_text_from_pdf(file_bytes):
     try:
+        import ocr
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
         text = ""
         for page in reader.pages:
-            text += page.extract_text() + "\n"
-        return text.strip()
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
+        
+        text = text.strip()
+        
+        # Fallback to OCR if pypdf extracted very little text (e.g., scanned PDF)
+        if len(text) < 20:
+            print("Extracted text is too short, falling back to OCR...")
+            ocr_text = ocr.extract_text_from_scanned_pdf(file_bytes)
+            if ocr_text:
+                text = ocr_text
+
+        return text
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error processing PDF: {str(e)}")
 
