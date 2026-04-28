@@ -90,7 +90,7 @@ function addFileToUI(name, id, statusText, docId = null) {
     
     if (docId) {
         item.style.cursor = 'pointer';
-        item.onclick = () => selectDocument(docId, name);
+        item.onclick = () => selectDocument(docId, name, true);
     }
     
     fileList.appendChild(item);
@@ -135,7 +135,12 @@ async function loadDocuments() {
 }
 
 // Select and Preview Document
-async function selectDocument(docId, filename) {
+async function selectDocument(docId, filename, fromSidebar = false) {
+    if (fromSidebar) {
+        resultsContainer.innerHTML = '';
+        searchInput.value = '';
+    }
+    
     currentDocId = docId;
     previewContainer.classList.remove('hidden');
     previewTitle.textContent = `Preview: ${filename}`;

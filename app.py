@@ -9,6 +9,7 @@ import meilisearch
 import uuid
 import datetime
 import regex
+import translate
 from sqlalchemy import create_engine, Column, String, DateTime, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -194,6 +195,12 @@ async def upload_file(file: UploadFile = File(...)):
     else:
         raise HTTPException(status_code=400, detail="Unsupported file format.")
 
+    # 2.5 Translate text to English
+    try:
+        text = translate.translate_to_english(text)
+    except Exception as e:
+        print(f"Translation Error: {e}")
+
     # 3. Index in Meilisearch
     try:
         meili_client.index(MEILI_INDEX_NAME).add_documents([{
@@ -277,6 +284,12 @@ async def get_document_details(doc_id: str):
                 elif extension in ["docx", "doc"]:
                     text = extract_text_from_docx(content)
                 
+                # Translate fallback text
+                try:
+                    text = translate.translate_to_english(text)
+                except Exception as t_err:
+                    print(f"Fallback Translation Error: {t_err}")
+
                 # Re-index in Meilisearch for next time
                 meili_client.index(MEILI_INDEX_NAME).add_documents([{
                     "id": doc_id,
