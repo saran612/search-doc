@@ -115,6 +115,9 @@ body{
     gap: 15px;
     overflow-y: auto;
 }
+.results-container:empty {
+    display: none;
+}
 .preview-container {
     flex: 2;
     background: #222;
@@ -207,7 +210,7 @@ body{
 }
 h1{
     background: linear-gradient(45deg, #fff, #aaa);
-    -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 .result-item {
