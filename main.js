@@ -20,7 +20,7 @@ let currentDocText = "";
 // Configure Backend URL based on environment
 const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 // IMPORTANT: Replace the placeholder below with your actual Render URL!
-const API_BASE_URL = isLocal ? 'http://localhost:8000' : 'https://search-doc.onrender.com/';
+const API_BASE_URL = (isLocal ? 'http://localhost:8000' : 'https://search-doc.onrender.com').replace(/\/+$/, '');
 
 // Drag and drop handlers
 dropZone.addEventListener('dragover', (e) => {
