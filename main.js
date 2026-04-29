@@ -17,6 +17,11 @@ let documents = [];
 let currentDocId = null;
 let currentDocText = "";
 
+// Configure Backend URL based on environment
+const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+// IMPORTANT: Replace the placeholder below with your actual Render URL!
+const API_BASE_URL = isLocal ? 'http://localhost:8000' : 'https://search-doc.onrender.com/';
+
 // Drag and drop handlers
 dropZone.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -60,7 +65,7 @@ async function uploadFile(file) {
     formData.append('file', file);
 
     try {
-        const response = await fetch('http://localhost:8000/upload', {
+        const response = await fetch(`${API_BASE_URL}/upload`, {
             method: 'POST',
             body: formData
         });
@@ -115,7 +120,7 @@ function updateFileStatus(id, icon, storageInfo) {
 // Fetch existing documents on load
 async function loadDocuments() {
     try {
-        const response = await fetch('http://localhost:8000/documents');
+        const response = await fetch(`${API_BASE_URL}/documents`);
         if (!response.ok) throw new Error('Failed to load documents');
         
         const docs = await response.json();
@@ -149,7 +154,7 @@ async function selectDocument(docId, filename, fromSidebar = false) {
     perFileSearch.value = '';
 
     try {
-        const response = await fetch(`http://localhost:8000/documents/${docId}`);
+        const response = await fetch(`${API_BASE_URL}/documents/${docId}`);
         if (!response.ok) throw new Error('Failed to fetch document details');
         
         const data = await response.json();
@@ -168,7 +173,7 @@ findMissingBtn.onclick = async () => {
     validationReport.textContent = "Validating...";
 
     console.log(`Validating document: ${currentDocId}`);
-    const url = `http://localhost:8000/documents/${currentDocId}/validate`;
+    const url = `${API_BASE_URL}/documents/${currentDocId}/validate`;
     console.log(`Fetch URL: ${url}`);
 
     try {
@@ -212,7 +217,7 @@ async function search() {
     if (!query) return;
 
     try {
-        const response = await fetch(`http://localhost:8000/search?q=${encodeURIComponent(query)}`);
+        const response = await fetch(`${API_BASE_URL}/search?q=${encodeURIComponent(query)}`);
         if (!response.ok) throw new Error('Search failed');
 
         const results = await response.json();
