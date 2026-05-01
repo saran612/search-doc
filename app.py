@@ -10,6 +10,9 @@ import uuid
 import datetime
 from core import regex
 from core import translate
+from core import summarizer
+from core import classifier
+from core import validator
 from sqlalchemy import create_engine, Column, String, DateTime, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -353,6 +356,46 @@ async def validate_document(doc_id: str):
         raise
     except Exception as e:
         print(f"Validation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─── Analysis Orchestrator ──────────────────────────────────────────────────
+
+@app.get("/documents/{doc_id}/analyze")
+async def analyze_document(doc_id: str):
+    """
+    Full analysis pipeline for a document:
+      1. Fetch text (from Meilisearch or MinIO fallback)
+      2. Summarize  — extract structured fields
+      3. Classify   — Death / Disability / Hospitalisation / Other
+      4. Validate   — deterministic consistency checks
+    """
+    print(f"Analyzing doc_id: {doc_id}")
+    try:
+        details = await get_document_details(doc_id)
+        text = details.get("text", "")
+
+        if not text or text.startswith("Error:"):
+            raise HTTPException(status_code=404, detail="Document text not available for analysis")
+
+        # Step 1: Summarize
+        summary_result = summarizer.summarize(text)
+
+        # Step 2: Classify
+        classification_result = classifier.classify(summary_result)
+
+        # Step 3: Validate
+        validation_result = validator.validate(summary_result, classification_result)
+
+        return {
+            "id":             doc_id,
+            "summary":        summary_result,
+            "classification": classification_result,
+            "validation":     validation_result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
