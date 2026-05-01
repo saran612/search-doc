@@ -8,8 +8,8 @@ import os
 import meilisearch
 import uuid
 import datetime
-import regex
-import translate
+from core import regex
+from core import translate
 from sqlalchemy import create_engine, Column, String, DateTime, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -120,7 +120,7 @@ async def log_requests(request: Request, call_next):
 
 def extract_text_from_pdf(file_bytes):
     try:
-        import ocr
+        from core import ocr
         reader = pypdf.PdfReader(io.BytesIO(file_bytes))
         text = ""
         for page in reader.pages:
