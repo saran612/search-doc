@@ -11,7 +11,9 @@ const previewTitle = document.getElementById('preview-title');
 const previewBody = document.getElementById('preview-body');
 const perFileSearch = document.getElementById('per-file-search');
 const findMissingBtn = document.getElementById('find-missing-btn');
+const analyzeBtn = document.getElementById('analyze-btn');
 const validationReport = document.getElementById('validation-report');
+const analysisReport = document.getElementById('analysis-report');
 
 let documents = [];
 let currentDocId = null;
@@ -151,6 +153,7 @@ async function selectDocument(docId, filename, fromSidebar = false) {
     previewTitle.textContent = `Preview: ${filename}`;
     previewBody.textContent = "Loading...";
     validationReport.classList.add('hidden');
+    analysisReport.classList.add('hidden');
     perFileSearch.value = '';
 
     try {
@@ -192,6 +195,53 @@ findMissingBtn.onclick = async () => {
     } catch (error) {
         console.error('Validation error:', error);
         validationReport.textContent = `Error validating: ${error.message}`;
+    }
+};
+
+// Deep Analyze Button
+analyzeBtn.onclick = async () => {
+    if (!currentDocId) return;
+    
+    analysisReport.classList.remove('hidden');
+    analysisReport.innerHTML = "<strong>Analyzing document...</strong> (This may take a few seconds if using LLMs)";
+
+    try {
+        const response = await fetch(`${API_BASE_URL}/documents/${currentDocId}/analyze`);
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        
+        const data = await response.json();
+        
+        // Build the HTML report
+        let html = `<h3 style="margin-top:0; color:#28a745;">Analysis Complete</h3>`;
+        
+        // Category
+        html += `<div style="margin-bottom: 15px;">
+            <strong>Classification:</strong> <span style="background-color:#e9ecef; padding: 2px 6px; border-radius:4px;">${data.classification.category}</span>
+            <br><small style="color:#666;">Confidence: ${(data.classification.confidence * 100).toFixed(0)}% | Reason: ${data.classification.reasoning}</small>
+        </div>`;
+        
+        // Summary fields
+        html += `<strong>Clinical Summary:</strong><ul style="margin-top: 5px; font-size: 14px;">`;
+        for (const [key, value] of Object.entries(data.summary)) {
+            html += `<li><strong>${key.replace('_', ' ')}:</strong> ${value || '<em style="color:#aaa;">null</em>'}</li>`;
+        }
+        html += `</ul>`;
+        
+        // Validation issues
+        if (data.validation.is_valid && data.validation.warnings.length === 0) {
+            html += `<div style="color: green;"><strong>Validation:</strong> ✅ Clean (No inconsistencies)</div>`;
+        } else {
+            html += `<strong>Validation Flags:</strong><ul style="margin-top: 5px; font-size: 14px;">`;
+            data.validation.errors.forEach(e => html += `<li style="color: red;">❌ Error: Missing/Invalid ${e.field}</li>`);
+            data.validation.warnings.forEach(w => html += `<li style="color: orange;">⚠️ Warning: ${w.detail}</li>`);
+            html += `</ul>`;
+        }
+
+        analysisReport.innerHTML = html;
+        
+    } catch (error) {
+        console.error('Analysis error:', error);
+        analysisReport.innerHTML = `<span style="color:red;">Error analyzing document: ${error.message}</span>`;
     }
 };
 
