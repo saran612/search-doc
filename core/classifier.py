@@ -13,7 +13,7 @@ VALID_CATEGORIES = ["Death", "Disability", "Hospitalisation", "Other"]
 
 def _llm_classify(summary: dict) -> dict:
     """Use LLM to classify based on the structured summary."""
-    prompt = f"""You are a regulatory case classifier for adverse event reports.
+    prompt = f"""You are a regulatory case classifier for CDSCO adverse event reports.
 
 Classification rules (strict priority order):
 - "Death"           → patient died as a result of the event

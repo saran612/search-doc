@@ -1,5 +1,7 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
 import pypdf
 import docx
 import io
@@ -13,7 +15,8 @@ from core import translate
 from core import summarizer
 from core import classifier
 from core import validator
-from sqlalchemy import create_engine, Column, String, DateTime, JSON
+from core import anonymizer
+from sqlalchemy import create_engine, Column, String, DateTime, JSON, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from botocore.exceptions import ClientError
@@ -34,7 +37,13 @@ class DocumentMetadata(Base):
     storage_key = Column(String)
     meili_id = Column(String)
     missing_fields = Column(JSON)
+    analysis_status = Column(String, default="pending")
+    analysis_result = Column(JSON, nullable=True)
+    token_mapping = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class BatchAnalyzeRequest(BaseModel):
+    doc_ids: List[str]
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -67,6 +76,27 @@ def init_services():
     try:
         Base.metadata.create_all(bind=engine)
         print("PostgreSQL: Tables verified/created.")
+        
+        # Safely add new columns if they don't exist (for existing databases)
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("ALTER TABLE documents ADD COLUMN analysis_status VARCHAR DEFAULT 'pending';"))
+                conn.commit()
+                print("Added analysis_status column.")
+            except Exception as e:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE documents ADD COLUMN analysis_result JSON;"))
+                conn.commit()
+                print("Added analysis_result column.")
+            except Exception as e:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE documents ADD COLUMN token_mapping JSON;"))
+                conn.commit()
+                print("Added token_mapping column.")
+            except Exception as e:
+                pass
     except Exception as e:
         print(f"PostgreSQL Connection Error: {e}")
 
@@ -161,7 +191,7 @@ async def get_documents():
     db = SessionLocal()
     try:
         docs = db.query(DocumentMetadata).order_by(DocumentMetadata.created_at.desc()).all()
-        return [{"id": d.id, "filename": d.filename, "created_at": d.created_at, "source": "db"} for d in docs]
+        return [{"id": d.id, "filename": d.filename, "created_at": d.created_at, "analysis_status": d.analysis_status, "source": "db"} for d in docs]
     finally:
         db.close()
 
@@ -217,6 +247,12 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         print(f"Translation Error: {e}")
 
+    # 2.6 Advanced Anonymisation (Step 1 & 2)
+    engine = anonymizer.AnonymizerEngine()
+    anon_result = engine.process(text)
+    token_mapping = anon_result["token_mapping"]
+    text = anon_result["step2_anonymised_text"] # Use generalised text for indexing
+
     # 3. Index in Meilisearch
     try:
         meili_client.index(MEILI_INDEX_NAME).add_documents([{
@@ -239,7 +275,8 @@ async def upload_file(file: UploadFile = File(...)):
             filename=file.filename,
             storage_key=file.filename,
             meili_id=doc_id,
-            missing_fields=missing_fields
+            missing_fields=missing_fields,
+            token_mapping=token_mapping
         )
         db.add(db_doc)
         db.commit()
@@ -306,6 +343,9 @@ async def get_document_details(doc_id: str):
                 except Exception as t_err:
                     print(f"Fallback Translation Error: {t_err}")
 
+                # Anonymize fallback text to protect PII
+                text = anonymizer.anonymize(text)
+
                 # Re-index in Meilisearch for next time
                 meili_client.index(MEILI_INDEX_NAME).add_documents([{
                     "id": doc_id,
@@ -322,6 +362,8 @@ async def get_document_details(doc_id: str):
             "filename": db_doc.filename,
             "text": text,
             "missing_fields": db_doc.missing_fields,
+            "analysis_status": db_doc.analysis_status,
+            "analysis_result": db_doc.analysis_result,
             "created_at": db_doc.created_at
         }
     except HTTPException:
@@ -397,6 +439,70 @@ async def analyze_document(doc_id: str):
     except Exception as e:
         print(f"Analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def process_batch_analysis(doc_ids: List[str]):
+    """Background worker to process a list of documents sequentially without timing out the API."""
+    db = SessionLocal()
+    try:
+        for doc_id in doc_ids:
+            # Mark as processing
+            db_doc = db.query(DocumentMetadata).filter(DocumentMetadata.id == doc_id).first()
+            if not db_doc:
+                continue
+                
+            db_doc.analysis_status = "processing"
+            db.commit()
+            
+            try:
+                # Fetch text directly using internal logic instead of HTTP call
+                # to prevent looping HTTP requests
+                doc = meili_client.index(MEILI_INDEX_NAME).get_document(doc_id)
+                text = doc.get("text", "")
+                
+                if not text:
+                    raise Exception("No text found in Meilisearch")
+                
+                # Run pipeline
+                summary_result = summarizer.summarize(text)
+                classification_result = classifier.classify(summary_result)
+                validation_result = validator.validate(summary_result, classification_result)
+                
+                final_result = {
+                    "summary": summary_result,
+                    "classification": classification_result,
+                    "validation": validation_result
+                }
+                
+                # Save result
+                db_doc.analysis_result = final_result
+                db_doc.analysis_status = "completed"
+                db.commit()
+                print(f"Batch processed: {doc_id}")
+                
+            except Exception as e:
+                print(f"Batch analysis failed for {doc_id}: {e}")
+                db_doc.analysis_status = "failed"
+                db_doc.analysis_result = {"error": str(e)}
+                db.commit()
+    finally:
+        db.close()
+
+@app.post("/documents/batch-analyze")
+async def batch_analyze_documents(request: BatchAnalyzeRequest, background_tasks: BackgroundTasks):
+    """
+    Accepts a list of document IDs and queues them for background processing.
+    Essential for analyzing 50+ regulatory reports simultaneously.
+    """
+    if not request.doc_ids:
+        raise HTTPException(status_code=400, detail="doc_ids list cannot be empty")
+        
+    # Queue the background task
+    background_tasks.add_task(process_batch_analysis, request.doc_ids)
+    
+    return {
+        "message": f"Successfully queued {len(request.doc_ids)} documents for background analysis.",
+        "status": "processing"
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import pytesseract
-from pdf2image import convert_from_bytes
+from pdf2image import convert_from_bytes, pdfinfo_from_bytes
 
 def preprocess_image(image):
     """
@@ -25,23 +25,33 @@ def preprocess_image(image):
     
     return thresh
 
-def extract_text_from_scanned_pdf(file_bytes):
+def extract_text_from_scanned_pdf(file_bytes, chunk_size=2):
     """
-    Converts PDF to images, preprocesses each with OpenCV, and runs Tesseract OCR.
+    Converts PDF to images iteratively in chunks to prevent memory crashes 
+    on large documents, preprocesses each with OpenCV, and runs Tesseract OCR.
     """
     try:
-        # Convert PDF bytes to a list of PIL Images
-        images = convert_from_bytes(file_bytes)
+        # Determine total pages
+        info = pdfinfo_from_bytes(file_bytes)
+        total_pages = info["Pages"]
         
         extracted_text = ""
-        for image in images:
-            # Preprocess image
-            processed_img = preprocess_image(image)
+        
+        # Process pages iteratively (pdf2image is 1-indexed)
+        for start_page in range(1, total_pages + 1, chunk_size):
+            end_page = min(start_page + chunk_size - 1, total_pages)
             
-            # Extract text using Tesseract
-            text = pytesseract.image_to_string(processed_img, config='--psm 3')
-            extracted_text += text + "\n\n"
+            # Convert only the current chunk to images
+            images = convert_from_bytes(file_bytes, first_page=start_page, last_page=end_page)
             
+            for image in images:
+                # Preprocess image
+                processed_img = preprocess_image(image)
+                
+                # Extract text using Tesseract
+                text = pytesseract.image_to_string(processed_img, config='--psm 3')
+                extracted_text += text + "\n\n"
+                
         return extracted_text.strip()
     except Exception as e:
         print(f"OCR Error: {e}")

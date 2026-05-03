@@ -17,18 +17,18 @@ SUMMARY_FIELDS = [
 
 def _llm_summarize(text: str) -> dict:
     """Call an OpenAI-compatible LLM to extract summary fields."""
-    prompt = f"""You are a regulatory document summarizer.
+    prompt = f"""You are a regulatory document summarizer for CDSCO adverse event reports.
 
 Extract ONLY what is explicitly stated. If a field is absent, use null — do NOT infer or hallucinate.
 
 Return ONLY valid JSON in this exact shape:
 {{
   "patient_info": "<age/sex/weight if present, else null>",
-  "drug_name": "<suspect drug name + dose if mentioned, else null>",
-  "event_description": "<concise clinical description of the adverse event, else null>",
-  "severity": "<Mild | Moderate | Severe | Life-threatening | Fatal | null>",
-  "outcome": "<Recovered | Recovering | Not Recovered | Fatal | Unknown | null>",
-  "key_findings": "<lab values, diagnoses, or clinical notes relevant to review, else null>"
+  "drug_name": "<suspect drug name + dose if mentioned>",
+  "event_description": "<concise clinical description of the adverse event>",
+  "severity": "<Mild | Moderate | Severe | Life-threatening | Fatal>",
+  "outcome": "<Recovered | Recovering | Not Recovered | Fatal | Unknown>",
+  "key_findings": "<lab values, diagnoses, or clinical notes relevant to regulatory review>"
 }}
 
 Document:
@@ -70,15 +70,27 @@ def _rule_based_summarize(text: str) -> dict:
 
     # Patient info
     patient_info = find([
-        r"(?:patient|name)\s*[:\-]\s*(.+?)(?:\n|,|;)",
-        r"(?:age|sex|gender|weight)\s*[:\-]\s*(.+?)(?:\n|,|;)"
+        r"(?:patient|name)\s*[:\-]\s*([^\n,;\.]+)",
+        r"(?:age|sex|gender|weight)\s*[:\-]\s*([^\n,;\.]+)",
+        r"(?:The\s+)?patient\s+([^,]+,\s*(?:male|female|m|f),\s*\d+\s*years?\s*old)",
+        r"(?:patient)\s+([A-Za-z\s\[\]_]+)\b"
     ])
 
     # Drug name
-    drug_name = find([
-        r"(?:drug|medicine|medication|suspect\s*drug)\s*[:\-]\s*(.+?)(?:\n|,|;)",
-        r"(?:tablet|capsule|injection|syrup)\s+(\w+)",
-    ])
+    drug_name = None
+    drug_name_match = re.search(r"(?:drug|medicine|medication|suspect\s*drug)\s*[:\-]\s*([^\n,;\.]+)", text, re.IGNORECASE)
+    if drug_name_match:
+        drug_name = drug_name_match.group(1).strip()
+    else:
+        # Fallback for natural language like "prescribed Cardioprin 75mg" or "taking Amoxicillin"
+        verb_match = re.search(r"(?:prescribed|taking|started\s*on|given)\s+([A-Z][a-zA-Z0-9\-]+(?:\s+\d+(?:mg|g|ml|mcg))?)", text, re.IGNORECASE)
+        if verb_match:
+            drug_name = verb_match.group(1).strip()
+        else:
+            # Fallback for "tablet of X" or "injection X"
+            form_match = re.search(r"(?:tablet|capsule|injection|syrup)\s+(?:of\s+)?([A-Za-z0-9]+)", text, re.IGNORECASE)
+            if form_match and form_match.group(1).lower() not in ["of", "for", "the", "a", "in", "and", "is"]:
+                drug_name = form_match.group(1).strip()
 
     # Severity
     severity_match = re.search(
@@ -99,9 +111,11 @@ def _rule_based_summarize(text: str) -> dict:
     )
     event_description = event_match.group(1).strip() if event_match else None
 
-    # Key findings – lab values, diagnoses
+    # Key findings – lab values, diagnoses, clinical states
     key_findings = find([
-        r"(?:lab(?:oratory)?\s*(?:result|value|finding)|diagnosis|diagnose[sd])[:\-]?\s*(.{10,200})"
+        r"(?:lab(?:oratory)?\s*(?:result|value|finding|tests?)|diagnosis|diagnose[sd]|key\s*findings?)[:\-]?\s*([^\n\.]+)",
+        r"(?:state\s*of|presented\s*with|signs\s*of|symptoms\s*of|diagnosed\s*with|history\s*of|secondary\s*to)\s+([a-zA-Z\s\-]+?)(?:\.|,|and|with|\n)",
+        r"(?:blood\s*pressure|BP|heart\s*rate|HR|SpO2|oxygen|ECG|temperature)\s*(?:was|is|showed|measured|at)?\s*([^\n\.,;]+)"
     ])
 
     return {
