@@ -14,6 +14,7 @@ const findMissingBtn = document.getElementById('find-missing-btn');
 const analyzeBtn = document.getElementById('analyze-btn');
 const validationReport = document.getElementById('validation-report');
 const analysisReport = document.getElementById('analysis-report');
+const analysisPanel = document.getElementById('analysis-panel');
 
 let documents = [];
 let currentDocId = null;
@@ -154,6 +155,7 @@ async function selectDocument(docId, filename, fromSidebar = false) {
     previewBody.textContent = "Loading...";
     validationReport.classList.add('hidden');
     analysisReport.classList.add('hidden');
+    analysisPanel.classList.add('hidden');
     perFileSearch.value = '';
 
     try {
@@ -172,6 +174,7 @@ async function selectDocument(docId, filename, fromSidebar = false) {
 findMissingBtn.onclick = async () => {
     if (!currentDocId) return;
     
+    analysisPanel.classList.remove('hidden');
     validationReport.classList.remove('hidden');
     validationReport.textContent = "Validating...";
 
@@ -202,8 +205,9 @@ findMissingBtn.onclick = async () => {
 analyzeBtn.onclick = async () => {
     if (!currentDocId) return;
     
+    analysisPanel.classList.remove('hidden');
     analysisReport.classList.remove('hidden');
-    analysisReport.innerHTML = "<strong>Analyzing document...</strong> (This may take a few seconds if using LLMs)";
+    analysisReport.innerHTML = "<strong>Analyzing document...</strong>";
 
     try {
         const response = await fetch(`${API_BASE_URL}/documents/${currentDocId}/analyze`);
@@ -305,6 +309,59 @@ searchBtn.addEventListener('click', search);
 searchInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') search();
 });
+
+// Resizer Logic
+function setupResizer(resizerId, leftElement, isSidebar = false) {
+    const resizer = document.getElementById(resizerId);
+    let x = 0;
+    let w = 0;
+
+    const mouseDownHandler = function (e) {
+        x = e.clientX;
+        const rect = leftElement.getBoundingClientRect();
+        w = rect.width;
+
+        document.addEventListener('mousemove', mouseMoveHandler);
+        document.addEventListener('mouseup', mouseUpHandler);
+        resizer.classList.add('resizing');
+        document.body.classList.add('resizing');
+    };
+
+    const mouseMoveHandler = function (e) {
+        const dx = e.clientX - x;
+        const newWidth = w + dx;
+        
+        // Boundaries for sidebar
+        if (isSidebar) {
+            if (newWidth > 200 && newWidth < 500) {
+                leftElement.style.width = `${newWidth}px`;
+            }
+        } else {
+            // Boundaries for preview split
+            const containerWidth = leftElement.parentElement.getBoundingClientRect().width;
+            const percentage = (newWidth / containerWidth) * 100;
+            if (percentage > 20 && percentage < 80) {
+                leftElement.style.width = `${percentage}%`;
+            }
+        }
+    };
+
+    const mouseUpHandler = function () {
+        document.removeEventListener('mousemove', mouseMoveHandler);
+        document.removeEventListener('mouseup', mouseUpHandler);
+        resizer.classList.remove('resizing');
+        document.body.classList.remove('resizing');
+    };
+
+    resizer.addEventListener('mousedown', mouseDownHandler);
+}
+
+// Initialize resizers
+const sidemenu = document.querySelector('.sidemenu');
+const previewLeft = document.querySelector('.preview-left');
+
+setupResizer('sidebar-resizer', sidemenu, true);
+setupResizer('split-resizer', previewLeft, false);
 
 // Initialize
 loadDocuments();

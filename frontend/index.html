@@ -20,6 +20,7 @@
             <div id="file-list" class="file-list"></div>
         </div>
     </div>
+    <div id="sidebar-resizer" class="resizer horizontal-resizer"></div>
     <div class="main">
         <div class="top-bar">
             <h1>Search Docs</h1>
@@ -41,9 +42,16 @@
                         <button id="analyze-btn" style="background-color: #28a745; margin-left: 5px;">Deep Analyze</button>
                     </div>
                 </div>
-                <div id="validation-report" class="validation-report hidden"></div>
-                <div id="analysis-report" class="validation-report hidden" style="background-color: #f8f9fa; border-left: 4px solid #28a745; text-align: left;"></div>
-                <div id="preview-body" class="preview-body"></div>
+                <div class="preview-split">
+                    <div class="preview-left">
+                        <div id="preview-body" class="preview-body"></div>
+                    </div>
+                    <div id="split-resizer" class="resizer horizontal-resizer"></div>
+                    <div id="analysis-panel" class="preview-right hidden">
+                        <div id="validation-report" class="validation-report hidden"></div>
+                        <div id="analysis-report" class="analysis-report-content hidden"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
