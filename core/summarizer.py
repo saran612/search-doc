@@ -58,7 +58,23 @@ Document:
 def _rule_based_summarize(text: str) -> dict:
     """Fast deterministic fallback when no LLM is configured."""
 
-    def find(patterns, flags=re.IGNORECASE):
+    # 1. Helper to strip noise/headers for cleaner narrative extraction
+    clean_text = re.sub(r'(?:REPORT|Case Reference|Date Typed|Case Summary Report|Page \d+).*?\n', '', text, flags=re.IGNORECASE)
+    
+    def find_all(patterns, flags=re.IGNORECASE):
+        found = []
+        for p in patterns:
+            matches = re.finditer(p, text, flags)
+            for m in matches:
+                try:
+                    val = m.group(1).strip()
+                except IndexError:
+                    val = m.group(0).strip()
+                if val and val not in found:
+                    found.append(val)
+        return found
+
+    def find_first(patterns, flags=re.IGNORECASE):
         for p in patterns:
             m = re.search(p, text, flags)
             if m:
@@ -68,60 +84,64 @@ def _rule_based_summarize(text: str) -> dict:
                     return m.group(0).strip()
         return None
 
-    # Patient info
-    patient_info = find([
-        r"(?:patient|name)\s*[:\-]\s*([^\n,;\.]+)",
-        r"(?:age|sex|gender|weight)\s*[:\-]\s*([^\n,;\.]+)",
-        r"(?:The\s+)?patient\s+([^,]+,\s*(?:male|female|m|f),\s*\d+\s*years?\s*old)",
-        r"(?:patient)\s+([A-Za-z\s\[\]_]+)\b"
+    # Patient info (extract generalized age and token)
+    p_info_parts = find_all([
+        r"(\[PATIENT_[A-Z0-9]{4}\])",
+        r"\b(\d{2}-\d{2})\s+years?\b", # Require "years" after range if it's XX-XX
+        r"\b(\d{1,2}\+|\bSenior\b|\bMinor\b)(?:\s+years?\s*(?:old)?)?\b",
+        r"\b(male|female|other)\b"
     ])
+    # Filter out potential date fragments like 24-05 from 2024-05-20
+    patient_info = ", ".join([p for p in p_info_parts if not re.match(r'^\d{2}-\d{2}$', p) or any(kw in text.lower() for kw in ["age", "years", "old"])])
+    if not patient_info and p_info_parts:
+        patient_info = ", ".join(p_info_parts)
 
     # Drug name
-    drug_name = None
-    drug_name_match = re.search(r"(?:drug|medicine|medication|suspect\s*drug)\s*[:\-]\s*([^\n,;\.]+)", text, re.IGNORECASE)
-    if drug_name_match:
-        drug_name = drug_name_match.group(1).strip()
+    drug_name = find_first([
+        r"(?:drug|medicine|medication|suspect\s*drug)\s*[:\-]\s*([^\n,;\.]+)",
+        r"(?:prescribed|taking|started\s*on|given|dose\s*of)\s+([A-Z][a-zA-Z0-9\-]+(?:\s+\d+(?:mg|g|ml|mcg))?)",
+        r"(?:tablet|capsule|injection|syrup)\s+(?:of\s+)?([A-Za-z0-9]+)"
+    ])
+    if drug_name and drug_name.lower() in ["of", "for", "the", "a", "in", "and", "is"]:
+        drug_name = None
+
+    # Severity & Outcome
+    severity = find_first([r"\b(mild|moderate|severe|life[-\s]threatening|fatal|dead|death|died)\b"])
+    if severity: 
+        if severity.lower() in ["dead", "death", "died"]: severity = "Fatal"
+        else: severity = severity.capitalize()
+    
+    outcome = find_first([r"\b(recovered|recovering|not\s+recovered|fatal|dead|death|died|unknown)\b"])
+    if outcome:
+        if outcome.lower() in ["dead", "death", "died"]: outcome = "Fatal"
+        else: outcome = outcome.capitalize()
+
+    # Event Description - Look for the clinical narrative
+    narrative = None
+    # More flexible sentence matching
+    narrative_matches = re.finditer(r"([^.!?]{20,}[^.!?]+(?:developed|presented|admitted|reported|observed|found|started|suffered|declared|brought|occurred)[^.!?]+[.!?])", clean_text, re.IGNORECASE | re.DOTALL)
+    narrative_sentences = [m.group(1).strip().replace('\n', ' ') for m in narrative_matches]
+    if narrative_sentences:
+        narrative = " ".join(narrative_sentences[:3]) 
     else:
-        # Fallback for natural language like "prescribed Cardioprin 75mg" or "taking Amoxicillin"
-        verb_match = re.search(r"(?:prescribed|taking|started\s*on|given)\s+([A-Z][a-zA-Z0-9\-]+(?:\s+\d+(?:mg|g|ml|mcg))?)", text, re.IGNORECASE)
-        if verb_match:
-            drug_name = verb_match.group(1).strip()
-        else:
-            # Fallback for "tablet of X" or "injection X"
-            form_match = re.search(r"(?:tablet|capsule|injection|syrup)\s+(?:of\s+)?([A-Za-z0-9]+)", text, re.IGNORECASE)
-            if form_match and form_match.group(1).lower() not in ["of", "for", "the", "a", "in", "and", "is"]:
-                drug_name = form_match.group(1).strip()
+        # Fallback to keywords
+        event_match = re.search(r"(?:adverse\s+event|adverse\s+reaction|side\s+effect|event\s+description|summary)[:\-]?\s*(.{20,400})", clean_text, re.IGNORECASE | re.DOTALL)
+        if event_match:
+            narrative = event_match.group(1).strip().replace('\n', ' ')
 
-    # Severity
-    severity_match = re.search(
-        r"\b(mild|moderate|severe|life[-\s]threatening|fatal)\b", text, re.IGNORECASE
-    )
-    severity = severity_match.group(1).capitalize() if severity_match else None
-
-    # Outcome
-    outcome_match = re.search(
-        r"\b(recovered|recovering|not\s+recovered|fatal|unknown)\b", text, re.IGNORECASE
-    )
-    outcome = outcome_match.group(1).capitalize() if outcome_match else None
-
-    # Event description – grab first 2 sentences with "adverse" or "event" or "reaction"
-    event_match = re.search(
-        r"(?:adverse\s+event|adverse\s+reaction|side\s+effect|complaint)[:\-]?\s*(.{20,300})",
-        text, re.IGNORECASE
-    )
-    event_description = event_match.group(1).strip() if event_match else None
-
-    # Key findings – lab values, diagnoses, clinical states
-    key_findings = find([
-        r"(?:lab(?:oratory)?\s*(?:result|value|finding|tests?)|diagnosis|diagnose[sd]|key\s*findings?)[:\-]?\s*([^\n\.]+)",
-        r"(?:state\s*of|presented\s*with|signs\s*of|symptoms\s*of|diagnosed\s*with|history\s*of|secondary\s*to)\s+([a-zA-Z\s\-]+?)(?:\.|,|and|with|\n)",
+    # Key Findings - Collect ALL matching findings
+    findings_list = find_all([
+        r"(?:lab(?:oratory)?|diagnosis|diagnose[sd]|key\s*findings?|findings?)[:\-]?\s*([^\n\.]+)",
+        r"(?:state\s*of|presented\s*with|signs\s*of|symptoms\s*of|diagnosed\s*with|history\s*of|secondary\s*to)\s+([a-zA-Z\s\-]{3,50})(?:\.|,|and|with|\n)",
+        r"\b(cyanosis|cyanotic|anaphylaxis|anaphylactic|arrest|hypotension|hypertension|respiratory\s*distress|tachycardia|bradycardia|seizure|rash|unconscious|unresponsive)\b",
         r"(?:blood\s*pressure|BP|heart\s*rate|HR|SpO2|oxygen|ECG|temperature)\s*(?:was|is|showed|measured|at)?\s*([^\n\.,;]+)"
     ])
+    key_findings = ", ".join(findings_list) if findings_list else None
 
     return {
         "patient_info":      patient_info,
         "drug_name":         drug_name,
-        "event_description": event_description,
+        "event_description": narrative,
         "severity":          severity,
         "outcome":           outcome,
         "key_findings":      key_findings

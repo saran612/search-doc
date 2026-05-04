@@ -113,6 +113,13 @@ class AnonymizerEngine:
         for m in set(matches):
             token = self._get_or_create_token(m.strip(), "ADDRESS")
             p_text = p_text.replace(m, token)
+
+        # 4. Hospitals (Fallback)
+        hosp_pattern = r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Hospital|Clinic|Medical|Centre|Center|Nursing Home))\b"
+        matches = re.findall(hosp_pattern, p_text, re.IGNORECASE)
+        for m in set(matches):
+            token = self._get_or_create_token(m, "HOSPITAL")
+            p_text = p_text.replace(m, token)
         a_text = p_text
         gen_log = []
 
